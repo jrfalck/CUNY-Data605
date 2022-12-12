@@ -1,0 +1,1333 @@
+---
+title: "Data605 - Final Exam"
+author: "Juan Falck"
+date: "`r Sys.Date()`"
+output:
+  rmdformats::readthedown:
+    highlight: kate
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+## Global options
+knitr::opts_chunk$set(cache = TRUE)
+```
+
+# 0. Load libraries and initialize things
+
+```{r, warning = FALSE, message = FALSE}
+rm(list = ls())
+library(tidyverse)
+library(tidymodels)
+library(skimr)
+library(keras)
+library(ggplot2)
+library(matrixcalc)
+library(pracma)
+```
+
+# 1. Playing with PageRank
+
+## 1.1 - Form the A matrix. Then, introduce decay and form the B matrix as we did in the course notes.
+
+```{r}
+#Create a transitions Matrix A
+options(digits = 3)
+
+r1 <- c(0,1/2,1/2,0,0,0)
+r2 <- c(0,0,0,0,0,0)
+r3 <- c(1/3,1/3,0,0,1/3,0)
+r4 <- c(0,0,0,0,1/2,1/2)
+r5 <- c(0,0,0,1/2,0,1/2)
+r6 <- c(0,0,0,1,0,0)
+
+n =6
+
+A <- matrix(c(r1,r2,r3,r4,r5,r6),n,n,byrow = TRUE)
+r <- c(1/6,1/6,1/6,1/6,1/6,1/6)
+
+print(A)
+
+print(rowSums(A))
+
+```
+
+We can see that Matrix A is not **row stochastic**. That means its row sums are not equal to one. In order to continue we need to make sure all rows are stochastic. So we will replace row 2 with a new row where all entries are 1/6 for equal probability and ensuring its sum = 1
+
+
+```{r}
+
+r2 <- c(1/6,1/6,1/6,1/6,1/6,1/6)
+
+A <- matrix(c(r1,r2,r3,r4,r5,r6),n,n,byrow = TRUE)
+print(A)
+print(rowSums(A))
+
+```
+
+
+Lets define **B matrix**
+
+```{r}
+# Decay Factor
+d <- 0.85
+
+# Adjusted B matrix
+B <- d * A + ((1-d)/n)
+print(B)
+```
+
+Let's check it is **row stochastic**
+
+```{r}
+print(rowSums(B))
+```
+
+
+## 1.2 Start with a uniform rank vector **r** and perform power iterations on B until convergence. That is, compute the solution r = B^n * r. Attempt this for a sufficiently large n so that r actually converges.
+
+```{r}
+# Lets calculate a large number of steps to check convergence
+nsteps = 100
+
+#Make sure you use the transpose of A, since you want the FROM as columns, and as defined in the question the A matrix has the FROM as rows.
+
+rf <- matrix.power(t(B),nsteps) %*% r
+
+print(rf)
+
+# Just to make sure it converged, compare to nsteps +1
+rf <- matrix.power(t(B),nsteps+1) %*% r
+
+print(rf)
+
+# Yes. same vector it has converged!
+
+```
+
+We have a new vector **rf** which we also checked it converged to an answer. This is our **pagerank** vector answer!.
+
+
+## 1.3 Compute the eigen-decomposition of B and verify that you indeed get an eigenvalue of 1 as the largest eigenvalue and that its corresponding eigenvector is the same vector that you obtained in the previous power iteration method. 
+
+This was a hard question in my opinion, but was able to solve it correctly.  The reason is because getting **eigenvalues** seems to be non-trivial for most software packages. But getting **eigenvectors** can be confusing because there are multiple vectors which can be answers as well.  
+
+So if you went ahead and just used the **eigen** function in R, you may not get the answer you expected.
+
+
+```{r}
+eigen(B)$values
+# Largest eigen value = 1
+
+eigen(t(B))$vectors
+
+```
+
+We can see that the largest positive **eigenvalue is one**, but the associated eigenvector is not at all what we expected. For sure is not equal to the **pagerank vector** we found before. We would need to derive the **eigenvector** differently to show our proof.
+
+**To get same pagerank vector as what we got before by raising the Matrix to a large power, we will find instead the null space of the B matrix minus the Identity matrix.**
+
+```{r}
+#Fist we transpose and subtract the diagonal matrix. This is the same process we would follow to find Eigenvectors manually.  
+
+Bt <- t(B) - diag(n)
+```
+
+Now we have a new Matrix which we can solve for its **null space**. We will use **pracma** library for this. The answer would be a multiple of the final answer we want.
+
+```{r}
+#Find the null space of the transformed B matrix
+pracmaBnull <- pracma::nullspace(Bt)
+
+# Lets find a factor between the nullspace of B and the PageRank vector.  One should be a multiple of the other
+
+lambdaFactor <- pracmaBnull[1,1] / rf[1,1]
+rf * lambdaFactor
+pracmaBnull
+
+```
+
+**Solved**. We can see now, that the null space of B transformed is the **same Eigenvector** as the **PageRank** vector, just with a different scaling factor, but none the less same vector.  
+
+We just showed that our **EIGENVECTOR** for Lambda equal to 1 is the **SAME** as the pagerank vector we found earlier.
+
+
+## 1.4 Use the graph package in R and its page.rank method to compute the Page Rank of the graph as given in A.
+
+```{r,warning = FALSE, message = FALSE}
+#library Graph no longer exists in CRAN. But I found another library to do the trick
+
+library(igraph)
+
+A_Graph <- graph_from_adjacency_matrix(A, weighted = TRUE, mode = "directed")
+plot(A_Graph)
+```
+
+Let's see that library's **pagerank** result.
+
+```{r}
+pageRank <- page.rank(A_Graph)$vector
+```
+
+All 3 methods give **same answer**
+
+```{r}
+# Pagerank vector by taking Matrix powers until convergence
+print(t(rf))
+
+# Pagerank vector by doing spectral decomposition of the B matrix
+print(t(pracmaBnull/lambdaFactor))
+
+# Page rank of matrix A by using page.rank function
+print(pageRank)
+```
+
+
+# 2. MNIST Dataset
+
+## 2.1 Load files and Plot function
+
+```{r, warning = FALSE, message = FALSE}
+#setwd("Code/FinalExam/MNIST")
+train_df <- read_csv("MNIST/train.csv")
+test_df <- read_csv('MNIST/test.csv')
+train_df[,2:ncol(train_df)] <- train_df[,2:ncol(train_df)] / 255 
+head(train_df)
+```
+
+
+Let's create a basic function that would take the matrix information of the MNIST digits and display it on screen.
+
+```{r}
+#Function to display DIGITS
+
+disp_digit <- function(digit_row, d_label) {
+  
+  img1 <- matrix(unlist(digit_row),nrow=28,ncol=28,byrow=TRUE)
+
+  # reverse and transpose, if not image rotated 90 degrees
+  img1 <- t(apply(img1, 2, rev))
+
+  # To keep aspect ratio
+  par(pty="s")
+
+  image(1:28, 1:28, img1, col=gray((0:255)/255), 
+        axes=FALSE, xlab = d_label, ylab = "")
+
+}
+```
+
+Let's test the function displaying the 10th row in our dataset
+
+```{r}
+# Choose a row (digit image)
+idnum=10
+disp_digit(train_df[idnum,2:ncol(train_df)], train_df[idnum,1])
+
+```
+
+We should be looking at a number "3"
+
+## 2.2 Basic information about dataset
+
+**Display the frequency of each number in the dataset**
+
+```{r}
+# count of all rows by Label (digit)
+train_df %>%
+  group_by(label) %>%
+  summarise(Count = n()) %>%
+  mutate(frequency = Count / sum(Count))
+
+```
+
+We can see here that although not exact, each digit 0 to 9 is represented almost uniformly across the dataset.
+
+
+Just a few queries we may need later.
+
+```{r}
+# 10 Rows, one per digit withe sum of every pixel (784)
+train_sum_df <- train_df %>%
+  group_by(label) %>%
+  summarise(across(everything(),sum), .groups = 'drop') 
+
+```
+
+```{r}
+# 10 Rows, with sum of all columns
+train_sum_columns <- train_df %>%
+  group_by(label) %>%
+  summarise(across(everything(),sum), .groups = 'drop') %>%
+  summarise(label=label,pixel_sum = rowSums(.))
+
+```
+
+```{r}
+# 10 Rows, one per digit with the mean of every pixel (784)
+# this just tell us for each digit, what is the mean of every specific pixel.
+
+train_mean_df <- train_df %>%
+  group_by(label) %>%
+  summarise(across(everything(),mean), .groups = 'drop') 
+
+```
+
+## 2.3 Plot some numbers
+
+Let's plot the first ten numbers in the dataframe
+
+```{r}
+# Plot First 10 numbers on dataframe
+par(mfrow=c(2,5),mai = c(0.1, 0.1, 0.1, 0.1),mar=c(1, 0, 1, 0))
+
+for (i in 1:10) {
+  disp_digit(train_df[i,2:ncol(train_df)],"")
+
+}
+
+```
+
+For fun let's **average all rows grouped by number and display it.
+
+```{r}
+# Plot all 10 digits based on averages
+par(mfrow=c(2,5),mai = c(0.1, 0.1, 0.1, 0.1),mar=c(1, 0, 1, 0))
+for (i in 1:10) {
+  #disp_digit(train_mean_df[i,2:ncol(train_mean_df)])
+  disp_digit(train_mean_df[i,2:ncol(train_mean_df)],"")
+}
+
+```
+
+
+## 2.4 More info about dataset
+
+**Display the mean of pixels for every digit. This average would be equivalent to the amount of "white" color each digit has. You can see that in where number 1 has a lower mean than number 8.**
+
+
+```{r}
+# Mean pixel intensity by digit
+train_df %>%
+  group_by(label) %>%
+  summarise(across(everything(),sum), .groups = 'drop', count=n()) %>%
+  summarise(label=label,pixel_sum = rowSums(.), count = count, avg_pix = pixel_sum/count/784)
+
+```
+
+
+## 2.5 PCA (Principal Component Analysis)
+
+```{r}
+# Call PCA for all numbers to the max 744 principal components)
+
+pca_result <- prcomp(train_df[,2:ncol(train_df)], rank = 784, center=TRUE) 
+#summary(pca_result) 
+
+```
+
+The maximum Principal components, is the minimum of the number of columns or number of rows.  In this case we can get up to **784** principal components, although you may not need need most of them.  The idea is that you will be able to capture most of the information in the dataset with a smaller subset of the overall information.  This can help save space and accelerate processing time.
+
+**Check variance by principal component**
+
+```{r}
+# std deviation
+sdev <- pca_result$sdev
+percent_variation <- sdev^2 / sum(sdev^2)
+
+var_df <- data.frame(PC=paste0("PC",1:length(sdev)),
+                     var_explained=percent_variation,
+                     stringsAsFactors = FALSE)
+```
+
+**Let's do some plotting.**
+
+```{r}
+# Function which will help later plot all PC's
+every_nth = function(n) {
+  return(function(x) {x[c(TRUE, rep(FALSE, n - 1))]})
+}
+```
+
+Plot of the variance explained by each Principal Component
+
+```{r}
+var_df %>%
+  mutate(PC = fct_inorder(PC)) %>%
+  ggplot(aes(x=PC,y=var_explained))+
+  scale_x_discrete(breaks=every_nth(n=100)) +
+  geom_point() + ggtitle("Variance explained by PC") + xlab("Number of PC's") + ylab("Variance Explained")
+```
+
+
+Plot of cumulative variance explained by first nth Components. Select components which explain 95% and 100% of total variance
+
+```{r}
+cumvar <- cumsum(var_df['var_explained'])
+comp_95 <- min(which(cumvar>=0.95))
+comp_100 <- min(which(cumvar>=1))
+print(comp_95)
+print(comp_100)
+```
+
+We see here that **95%** of variance is explained by the first **154 PC's** while to get to **100%** of the variance you need **704 PC's**
+
+Let's plot it!
+
+```{r}
+ggplot(var_df,aes(x=1:784, y=cumsum(var_explained))) + geom_line() + geom_point()+ 
+  ggtitle("Cummulative Variance explained by PC") +
+  xlab("Number of PC's") + ylab("Cum Variance Explained")
+```
+
+
+**Plot first few PRINCIPAL COMPONENTS**
+
+```{r}
+# Plot 10 First COMPONENTS
+par(mfrow=c(2,5),mai = c(0.1, 0.1, 0.1, 0.1),mar=c(1, 0, 1, 0))
+
+for (i in 1:10) {
+  disp_digit(pca_result$rotation[,i],"")
+  }
+
+```
+
+Showing the first n Principal Components looks "noisy". that is because these are the vectors which explain the most variance of all the dataset with **all numbers** included. So what you are looking at is a mixture of numbers **0 to 9**.
+
+**Print first 10 numbers**
+
+We can also using X number of components **reconstruct** the numbers and PLOT them. Let's see how they look with only **10 PC's** out of 784.
+
+```{r}
+# Plot 10 First Number RECONSTRUCTED with 10 PCS
+par(mfrow=c(2,5),mai = c(0.1, 0.1, 0.1, 0.1),mar=c(1, 0, 1, 0))
+
+r <- 10
+recon <- t(t(pca_result$x[,1:r] %*% t(pca_result$rotation[,1:r])) + pca_result$center)
+
+for (i in 1:10) {
+    disp_digit(recon[i,],"")
+  }
+
+```
+
+Not too good. You can't be sure of the numbers behind. Let's try with more PC's, This time **50 PC's**
+
+```{r}
+# Plot 10 First Number RECONSTRUCTED with 50 PCS
+par(mfrow=c(2,5),mai = c(0.1, 0.1, 0.1, 0.1),mar=c(1, 0, 1, 0))
+
+r <- 50
+recon <- t(t(pca_result$x[,1:r] %*% t(pca_result$rotation[,1:r])) + pca_result$center)
+
+for (i in 1:10) {
+    disp_digit(recon[i,],"")
+  }
+
+```
+
+Better, but still not too clear.  Let's try now with **150 PC's**
+
+```{r}
+# Plot 10 First Number RECONSTRUCTED with 200 PCS
+par(mfrow=c(2,5),mai = c(0.1, 0.1, 0.1, 0.1),mar=c(1, 0, 1, 0))
+
+r <- 200
+recon <- t(t(pca_result$x[,1:r] %*% t(pca_result$rotation[,1:r])) + pca_result$center)
+
+for (i in 1:10) {
+    disp_digit(recon[i,],"")
+  }
+
+```
+
+Much Better. Let this time use as many Principal Components as needed to get 100% of the variance. That is **704 PC's**
+
+```{r}
+# Plot 10 First Number RECONSTRUCTED 100%
+par(mfrow=c(2,5),mai = c(0.1, 0.1, 0.1, 0.1),mar=c(1, 0, 1, 0))
+
+r <- comp_100
+recon <- t(t(pca_result$x[,1:r] %*% t(pca_result$rotation[,1:r])) + pca_result$center)
+
+for (i in 1:10) {
+    disp_digit(recon[i,],"")
+  }
+
+```
+
+Yes. We exactly got the original digits, and we used fewer than the max 784 PC's.
+
+**Filter only 8's**
+Let's what happens when we re-do the whole PCA analysis but we include only the rows that refer to the **number 8**
+
+```{r}
+train_all8_df <- train_df %>%
+  filter(label==8)
+```
+
+
+**Re-run PCA**
+
+```{r}
+# Cal PCA for all 8's in the dataset
+
+pca_result8 <- prcomp(train_all8_df[,2:ncol(train_all8_df)], rank = 784, center=TRUE) 
+#summary(pca_result8) 
+```
+
+**Calculate variance only for the 8's**
+
+```{r}
+# std deviation of each Principal Component
+sdev <- pca_result8$sdev
+percent_variation <- sdev^2 / sum(sdev^2)
+
+#Variance of PC's
+var_df <- data.frame(PC=paste0("PC",1:length(sdev)),
+                     var_explained=percent_variation,
+                     stringsAsFactors = FALSE)
+
+#Cumulative variance of ordered PC's
+cumvar <- cumsum(var_df['var_explained'])
+comp_95 <- min(which(cumvar>=0.95))
+comp_100 <- min(which(cumvar>=1))
+
+#Variance explained up to 95% and 100%
+print(comp_95)
+print(comp_100)
+
+```
+
+**Let's Plot first few PRINCIPAL COMPONENTS**
+
+```{r}
+# Plot 10 First COMPONENTS
+par(mfrow=c(2,5),mai = c(0.1, 0.1, 0.1, 0.1),mar=c(1, 0, 1, 0))
+
+for (i in 1:10) {
+  disp_digit(pca_result8$rotation[,i],"")
+  }
+
+```
+
+We can see now the first PC's capture only the information for the number 8, which now can be distinguished. We can see all refer to the number 8.  Please recall we can later reconstruct the original images by combining these "kind of weird looking" images.  Let's do it!
+
+
+**Display 10 Reconstructed number 8's**
+
+```{r}
+# Plot 10 First Numbers RECONSTRUCTED at 95% variance captured
+par(mfrow=c(2,5),mai = c(0.1, 0.1, 0.1, 0.1),mar=c(1, 0, 1, 0))
+
+r <- comp_95
+#Let's reconstruct the number
+recon <- t(t(pca_result8$x[,1:r] %*% t(pca_result8$rotation[,1:r])) + pca_result8$center)
+
+for (i in 1:10) {
+    disp_digit(recon[i,],"")
+  }
+
+```
+
+
+
+## 2.6 Multinomial Classification Model
+
+Convert labels to factors, as some ML models work only with factors and not characters.
+
+
+```{r}
+train_df$label <- as.factor(train_df$label)
+```
+
+We will use **TIDYMODELS** to setup our basic classification using **multinomial classification**
+
+```{r}
+multinom_spec <-
+  multinom_reg(penalty = 0, mixture=1) %>%
+  set_mode("classification") %>%
+  set_engine("glmnet")
+```
+
+**Let's fit our model!**
+
+```{r}
+doParallel::registerDoParallel()
+multinom_fit <- multinom_spec %>%
+  fit(label ~ .,
+    data = train_df
+  )
+
+# multinom_fit
+```
+
+Let's get our results from our fitting.
+
+```{r}
+results_train <- multinom_fit %>%
+  predict(new_data = train_df) %>%
+  mutate(
+    truth = train_df$label
+  ) 
+```
+
+```{r}
+results_train %>%
+  accuracy(truth, .pred_class)
+```
+
+We got to an accuracy of **95.2%**
+
+**Lets show the CONFUSION MATRIX**
+
+```{r}
+results_train %>%
+  conf_mat(truth, .pred_class)
+```
+
+
+## 2.7 Keras CLASSIFICATION using a Feedforward Neural Network
+
+Let's separate our data into train and testing.
+
+```{r}
+mnist_nn_split <- initial_split(train_df)
+train <- training(mnist_nn_split)
+test <- testing(mnist_nn_split)
+
+y_train <- as.matrix(train$label)
+x_train <- as.matrix(train[,-1])
+y_test <- as.matrix(test$label)
+x_test <- as.matrix(test[,-1])
+```
+
+We need to convert some of the features to **categorical**
+
+```{r}
+y_train <- to_categorical(y_train, num_classes = 10)
+y_test <- to_categorical(y_test, num_classes = 10)
+```
+
+Let's define our dense **feed-forward Neural Network**
+
+```{r}
+dense_model <- keras_model_sequential() 
+
+dense_model %>% 
+  layer_dense(units = 128, activation = 'relu', input_shape = c(784)) %>% 
+  layer_batch_normalization() %>%
+  layer_dropout(rate = 0.3) %>% 
+  layer_dense(units = 32, activation = 'relu') %>%
+  layer_batch_normalization() %>%
+  layer_dropout(rate = 0.2) %>%
+  layer_dense(units = 10, activation = 'softmax')
+
+summary(dense_model)
+
+```
+
+We need to compile the model
+
+```{r}
+dense_model %>% compile(
+  loss = 'categorical_crossentropy',
+  optimizer = optimizer_adam(),
+  metrics = c('accuracy')
+)
+```
+
+Let's fit our model 
+
+```{r}
+history <- dense_model %>% fit(
+  x_train, y_train, 
+  epochs = 20, batch_size = 256, 
+  validation_split = 0.1
+)
+```
+
+```{r}
+plot(history)
+```
+
+```{r}
+dense_model %>% evaluate(x_test, y_test)
+```
+
+**We got to an accuracy of 97%.**
+
+## 2.8 Keras CLASSIFICATION with a Convolutional Neural Network
+
+```{r}
+# Lets reshape the X'
+x_trainR <- array_reshape(x_train,c(31500,784,1))
+x_testR <- array_reshape(x_test,c(10500,784,1))
+
+```
+
+
+```{r}
+#  Works now, but you need to re-shape x to add one dime of 1
+cnn_model <- keras_model_sequential()
+
+cnn_model %>% 
+  layer_conv_1d(filters = 32, kernel_size = 3, activation = 'relu', 
+                input_shape = c(784,1)) %>% 
+  #layer_max_pooling_1d(pool_size = 3) %>% 
+  layer_conv_1d(filters = 64, kernel_size = 3, activation = 'relu') %>% 
+  #layer_global_average_pooling_1d() %>% 
+  layer_max_pooling_1d(pool_size = 2) %>%
+  layer_dropout(rate = 0.2) %>% 
+  layer_flatten() %>%
+  layer_dense(units=128,activation = 'relu') %>%
+  layer_dropout(rate = 0.2) %>% 
+  layer_dense(units = 10, activation = 'softmax') %>% 
+  compile(
+    loss = 'categorical_crossentropy',
+    optimizer = optimizer_adam(),
+    metrics = c('accuracy')
+  )
+
+```
+
+
+```{r}
+summary(cnn_model)
+```
+
+
+```{r}
+cnn_model %>% fit(x_trainR, y_train, batch_size = 128, 
+                   epochs = 10,validation_split = 0.1)
+```
+
+
+```{r}
+plot(history)
+```
+
+
+```{r}
+cnn_model %>% evaluate(x_testR, y_test, batch_size = 128)
+```
+
+**We got to an accuracy of 97.7%**
+
+
+# 3. House Prices Dataset
+
+## 3.1 Load Dataset
+
+```{r, warning = FALSE, message = FALSE}
+#setwd("../HousePrices")
+train_df <- read_csv("HousePrices/train.csv")
+test_df <- read_csv('HousePrices/test.csv')
+
+head(train_df)
+```
+
+
+## 3.2 Basic Descriptive Stats
+
+First let's use **SKIMR**
+
+```{r}
+skimr::skim(train_df)
+```
+
+
+Let's take a look at basic stats
+
+```{r}
+summary(train_df)
+```
+
+## 3.3 Correlation Plots
+
+```{r}
+par(mfrow=c(1,1))
+library(corrplot)
+corr_df <- select_if(train_df, is.numeric) 
+
+#Select 3 variables
+corr_3var_df <- corr_df %>%
+  dplyr::select(OverallQual,GrLivArea,GarageArea)
+
+cormat <- round(cor(corr_3var_df,use = "complete.obs"),2)
+corrplot(cormat, method="number",
+         tl.cex = 0.8,
+         number.cex = 0.8,
+         cl.cex = 0.3)
+```
+
+Another flavor of Correlation Plots
+
+```{r}
+# 
+library(GGally)
+corr_3var_df %>%
+  ggscatmat(alpha = 0.7)
+```
+
+## 3.4 Scatter Plots (Selected variables)
+
+```{r}
+library("ggpubr")
+ggscatter(corr_df, x = "SalePrice", y = "GrLivArea", 
+          add = "reg.line", conf.int = TRUE, 
+          cor.coef = TRUE, cor.method = "pearson",
+          xlab = "Sales Price $", ylab = "Gr Living Area")
+```
+
+
+```{r}
+
+ggscatter(corr_df, x = "SalePrice", y = "OverallQual", 
+          add = "reg.line", conf.int = TRUE, 
+          cor.coef = TRUE, cor.method = "pearson",
+          xlab = "Sales Price $", ylab = "Overall Qualty")
+```
+
+
+```{r}
+
+ggscatter(corr_df, x = "SalePrice", y = "GarageArea", 
+          add = "reg.line", conf.int = TRUE, 
+          cor.coef = TRUE, cor.method = "pearson",
+          xlab = "Sales Price $", ylab = "Garage Area")
+```
+
+
+```{r}
+
+ggscatter(corr_df, x = "SalePrice", y = "TotalBsmtSF", 
+          add = "reg.line", conf.int = TRUE, 
+          cor.coef = TRUE, cor.method = "pearson",
+          xlab = "Sales Price $", ylab = "Basement SF")
+```
+
+
+## 3.5 Calculate Shapiro Test for normality. 
+
+```{r}
+for (i in colnames(corr_df)){       # for-loop over columns
+  res <- shapiro.test(corr_df[[i]])$p
+  print(paste0(i," ",res))
+}
+```
+
+**Pearson correlation to SalePrice**
+We will run Pearson correlation of all numerical features against the objective variable **SalePrice**. 
+
+```{r}
+# Create list of Pearson Correlation coefficient
+mylist <- list()
+
+for (i in colnames(corr_df)){       # for-loop over columns
+  res <- cor(corr_df[[i]],corr_df$SalePrice,method = "pearson", use = "complete.obs")
+  mylist[[ i ]] <- res
+}
+#mylist
+```
+
+```{r}
+#Sort by value decreasing order
+sorted_mylist <- mylist[order(unlist(mylist), decreasing=TRUE)]
+sorted_mylist
+```
+
+**Top 5 correlated variables where:**
+
+1. OverallQual
+
+2. GrLivArea
+
+3. GarageCars
+
+4. GarageArea
+
+5. TotalBsmtSF
+
+
+## 3.6 Test Pairwise Correlation Hypothesis at 80% CI
+
+```{r}
+cor.test(corr_df$OverallQual, corr_df$GrLivArea, method = "pearson", conf.level = 0.80)
+```
+
+```{r}
+cor.test(corr_df$OverallQual, corr_df$GarageArea, method = "pearson", conf.level = 0.80)
+```
+
+```{r}
+cor.test(corr_df$GarageArea, corr_df$GrLivArea, method = "pearson", conf.level = 0.80)
+```
+
+The P-values are very small. Probability of error that there is **no correlation** between variables is very small.
+
+
+## 3.7 Precision Matrix and LU Decomposition
+
+```{r}
+precision_mat <- solve(cormat)
+```
+
+```{r}
+precision_mat %*% cormat
+cormat %*% precision_mat
+```
+
+
+```{r}
+lu.decomp <- function(M){
+  rows <- dim(M)[1]
+  cols <- dim(M)[2]
+  
+  if (rows != cols) {
+    return(list(0,0))} #If is not square matrix return list of 0's
+  else {
+    L <- diag(x = 1, rows,cols) # L by definition has 1's in the diagonal
+    U <- M # Upper will have its first row EQUAL to input matrix
+    for (x in 1:(rows-1)){
+      for (y in (x+1):rows){
+          factor = U[y,x]/U[x,x] # Is the number used to eliminate
+          L[y,x] = factor # We make the lower matrix that value
+          U[y,] = U[y,]-factor*U[x,] # We use Gaussian elimination
+      }
+    }
+    return(list("L"=L,"U"=U)) # We return our completed L and U matrices
+  }
+}
+```
+
+
+```{r}
+lu <- lu.decomp(cormat)
+lu
+```
+
+Lets' check manual results vs function in **matrixcalc** library
+
+```{r}
+library(matrixcalc)
+lu.decomposition(cormat)
+```
+
+**Same result both ways, which is comforting**
+
+
+## 3.8 Analysis Selected Skewed Variable
+
+Plot Histogram of variable **OpenPorchSF**
+
+```{r}
+# plot
+p <- train_df %>%
+  # filter( price<300 ) %>%
+  ggplot( aes(x=OpenPorchSF)) +
+    geom_histogram( binwidth=50, fill="#69b3a2", color="#e9ecef", alpha=0.9) +
+    ggtitle("Distribution of OpenPorchSF Variable")
+
+p
+```
+
+
+Use **fitdistr** in **MASS** library
+
+```{r}
+library(MASS)
+```
+
+Find the **lambda** parameter and use it to simulate an exponential distribution
+
+```{r}
+resfit <- fitdistr(train_df$OpenPorchSF, "exponential")
+```
+
+```{r}
+simulated <- as.data.frame(rexp(1000,resfit$estimate))
+colnames(simulated) <- c("estimate")
+
+simulated %>%
+  ggplot( aes(x=estimate)) +
+    geom_histogram( binwidth=50, fill="#69b3a2", color="#e9ecef", alpha=0.9) +
+    ggtitle("Distribution of Simulate Exponential variable")
+
+```
+
+**We can simulate results and see they are also skewed, but not quite the same distribution as the empirical data.**
+
+
+## 3.9 Find 5th and 95th percentile of cumulative distribution
+
+```{r}
+qexp(.05, rate=resfit$estimate)
+qexp(.95, rate=resfit$estimate)
+
+```
+
+Generate a 95% confidence interval from the empirical data, assuming normality.
+
+```{r}
+
+# Calculate the mean and standard error
+l.model <- lm(OpenPorchSF ~ 1, train_df)
+
+# Calculate the confidence interval
+confint(l.model, level=0.95)
+
+```
+
+**Let's try also manually to see the results and compare them.**
+
+```{r}
+#Manual way of calculating CI
+sample.mean <- mean(train_df$OpenPorchSF)
+print(sample.mean)
+
+sample.n <- length(train_df$OpenPorchSF)
+sample.sd <- sd(train_df$OpenPorchSF)
+sample.se <- sample.sd/sqrt(sample.n)
+print(sample.se)
+
+alpha = 0.05
+degrees.freedom = sample.n - 1
+t.score = qt(p=alpha/2, df=degrees.freedom,lower.tail=F)
+print(t.score)
+
+margin.error <- t.score * sample.se
+lower.bound <- sample.mean - margin.error
+upper.bound <- sample.mean + margin.error
+print(c(lower.bound,upper.bound))
+```
+
+
+```{r}
+#Provide the empirical 5th percentile and 95th percentile of the data.
+
+quantile(x=train_df$OpenPorchSF, probs=c(.05, .95))
+```
+
+
+## 3.10 Modelling (Machine Learning)
+
+We will use **TIDYMODELS** to prepare and fit a collection of model using a **grid search** method of testing many hyper-parameters. We will fit Lasso regression with regularization and also **XGBoost** for regression.  We will check results from **cross-validation** and select the model and hyper-parameters which performs the best on validation data.  
+
+
+### 3.10.1 Prepare data
+
+```{r}
+#convert all char to factors
+train_df <- mutate(train_df, across(where(is.character), as.factor))
+test_df <- mutate(test_df, across(where(is.character), as.factor))
+#test_df2 <- mutate(test_df2, across(where(is.character), as.factor))
+```
+
+### 3.10.2 Split data training and test
+
+```{r}
+set.seed(42)
+sales_split <- initial_split(train_df, prop=9/10)
+sales_train <- training(sales_split)
+sales_test <- testing(sales_split)
+```
+
+
+### 3.10.3 Pre-process with RECIPES
+
+```{r, warning = FALSE, message = FALSE}
+
+# will test with 3 different options to data engineering
+
+sales_recipe1 <- recipe(SalePrice ~ ., data = sales_train) %>%
+  step_impute_knn(all_predictors(), neighbors = 50) %>%
+  step_dummy(all_nominal(), -all_outcomes()) %>%
+  step_zv(all_numeric_predictors()) %>%
+  step_normalize(all_numeric_predictors()) %>%
+  prep()
+
+sales_prep1 <- prep(sales_recipe1)
+#sales_prep1
+
+sales_recipe2 <- recipe(SalePrice ~ ., data = sales_train) %>%
+  step_impute_mode(all_nominal()) %>% 
+  step_impute_mean(all_numeric_predictors()) %>%
+  step_dummy(all_nominal(), -all_outcomes()) %>%
+  step_zv(all_numeric_predictors()) %>%
+  step_normalize(all_numeric_predictors()) %>%
+  prep()
+
+sales_prep2 <- prep(sales_recipe2)
+
+sales_recipe3 <- recipe(SalePrice ~ ., data = sales_train) %>%
+  step_impute_mode(all_nominal()) %>% 
+  step_impute_mean(all_numeric_predictors()) %>%
+  step_BoxCox(all_numeric_predictors()) %>%
+  step_dummy(all_nominal(), -all_outcomes()) %>%
+  step_zv(all_numeric_predictors()) %>%
+  step_normalize(all_numeric_predictors()) %>%
+  prep()
+
+sales_prep3 <- prep(sales_recipe3)
+
+```
+
+### 3.10.4 Define Cross-Validation Folds
+
+```{r}
+## Cross Validation Split of Training Data
+set.seed(42)
+sales_folds <- vfold_cv(
+  data = sales_train, 
+  v = 10
+  ) 
+
+#sales_folds
+```
+
+### 3.10.5 Define Models
+
+```{r}
+# Linear Regression
+lm_spec <- linear_reg() %>% 
+            set_engine('lm') %>% 
+            set_mode('regression')
+
+#lm_spec
+```
+
+
+```{r}
+# Lasso Regression
+lasso_spec <- linear_reg(mode = "regression",
+                        penalty = tune(),
+                        mixture = 1) %>% 
+  set_engine("glmnet")
+
+#lasso_spec
+```
+
+
+```{r}
+# XGBoost Regression
+xgboost_spec <- boost_tree(
+  trees = tune(),
+  mtry = tune(),
+  tree_depth = tune(),
+  learn_rate = tune()
+  ) %>%
+  set_mode("regression") %>% 
+  set_engine("xgboost")
+
+```
+
+
+
+### 3.10.6 Define workflow set
+
+Let's stack the models we want to compare.
+
+```{r}
+workflow_set <-workflow_set(
+  preproc = list(sales_recipe1,sales_recipe2, sales_recipe3),
+  models = list(lasso_spec, xgboost_spec),
+  cross = TRUE
+  )
+
+workflow_set
+
+```
+
+### 3.10.7 Fit the stack of Models and Recipes
+
+Here we fit the models and use hyper-parameter tuning using 150 levels.
+
+```{r}
+# The fitting lasted 5.5 hours in my PC.  I save the model results in order to easily knit. For actually running the fit, please change RUN = TRUE
+
+RUN = FALSE
+if (RUN) {
+doParallel::registerDoParallel()
+start.time <- Sys.time()
+start.time
+fit_workflows <- workflow_set %>%  
+  workflow_map(
+    seed = 42,  
+    fn = "tune_grid",
+    grid = 150,
+    resamples = sales_folds,
+    verbose = TRUE
+  )
+
+end.time <- Sys.time()
+time.taken <- end.time - start.time
+time.taken
+doParallel::stopImplicitCluster()
+}
+```
+
+**The fitting took 5.5 hours on a i7 Gen 11 machine with 32G of RAM.**
+
+### 3.10.8 Save/Load resulting model (backup)
+
+```{r}
+if (RUN) {
+saved_housesales_modelset <- fit_workflows
+saveRDS(saved_housesales_modelset, "HousePrices/housesales.rds")
+}
+########
+if (!RUN) {
+fit_workflows <- readRDS("HousePrices/housesales.rds")
+}
+```
+
+### 3.10.9 Review Results of all models
+
+Let's see how our models performed and choose a winner.
+
+```{r}
+autoplot(fit_workflows)
+
+collect_metrics(fit_workflows)
+
+rank_results(fit_workflows, rank_metric = "rmse", select_best = TRUE)
+```
+
+
+**Extract the best workflow**
+
+```{r}
+metric <- "rmse"
+
+best_workflow_id <- fit_workflows %>% 
+  rank_results(
+    rank_metric = metric,
+    select_best = TRUE
+  ) %>% 
+  dplyr::slice(1) %>% 
+  pull(wflow_id)
+
+workflow_best <- extract_workflow(fit_workflows, id = best_workflow_id)
+
+best_workflow_id
+```
+
+
+**Extract tuning results from workflowset**
+
+We know our best model in training, now let's extract the tuning parameters used to generate it.
+
+```{r}
+workflow_best_tuned <- fit_workflows[fit_workflows$wflow_id == best_workflow_id,"result"][[1]][[1]]
+
+workflow_best_tuned
+
+collect_metrics(workflow_best_tuned)
+autoplot(workflow_best_tuned)
+select_best(workflow_best_tuned, "rmse")
+
+```
+
+
+**Fit the final model**
+
+Now let's test with the unseen **test data**
+
+```{r}
+workflow_best_final <- finalize_workflow(workflow_best, select_best(workflow_best_tuned, "rmse"))
+
+doParallel::registerDoParallel()
+
+workflow_best_final_fit <- workflow_best_final %>% 
+  last_fit(
+    split = sales_split
+  )
+
+doParallel::stopImplicitCluster()
+
+workflow_best_final_fit
+```
+
+
+```{r}
+workflow_best_final_fit %>% 
+  collect_metrics()
+
+```
+
+**R2 of 0.91**
+
+**Some visualizations of the selected winner model**
+
+```{r}
+fit_test <- workflow_best_final_fit %>% 
+  collect_predictions()
+
+fit_test
+```
+
+**Plot our predictions vs actual unseen test data**
+
+```{r}
+fit_test %>%
+  ggplot(aes(x=SalePrice, y=.pred)) +
+  geom_abline(slope=1,intercept=0) +
+  geom_point(alpha=0.3)
+```
+
+**Boxplot of predictions vs actual results**
+
+```{r}
+boxplot_data <- fit_test %>%
+  mutate(difference = .pred - SalePrice)
+```
+
+```{r}
+boxplot_data$difference %>%
+  boxplot(main = "Results of our Selected Model predicting",
+          xlab = "Difference of Predictions",
+          horizontal = FALSE)
+```
+
+### 3.10.10 Analysis of Regression Variables
+
+**Variable Importance**
+
+Here we use the **VIP** library which helps us identify the most important variables used in our selected model. This ranking of importance can help us explain our model. Here you will the most important variable ranked from the top.
+
+```{r}
+
+library(vip)
+extract_workflow(workflow_best_final_fit) %>%
+  extract_fit_parsnip() %>%
+  vip(geom = "col")
+
+```
+
+
+### 3.10.11 Predict on NEW DATA and load to KAGGLE
+
+**KAGGLE username: juanfalck**
+
+```{r}
+my_predictions1 <- workflow_best_final_fit$.workflow[[1]] %>%
+  predict(test_df)
+```
+
+**Save the data in .CSV file to upload to KAGGLE**
+
+```{r}
+my_predictions2 <- as_tibble(test_df$Id)
+my_predictions2$pred <- my_predictions1$.pred
+write.csv(my_predictions2,"JF_predictions.csv")
+```
+
+
+![](kaggle.jpg)
+
+# THANK YOU!
+
+**It has been a great class!!!**
